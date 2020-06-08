@@ -1,5 +1,9 @@
 use sdl2::{event::Event, keyboard::Keycode, pixels::Color};
 
+mod world;
+
+use world::World;
+
 fn main() {
     let sdl_context = sdl2::init().expect("Cannot initialise SDL");
     let video_subsystem = sdl_context.video().expect("Canot get video");
@@ -19,6 +23,8 @@ fn main() {
     let mut tick = 0;
 
     let mut event_pump = sdl_context.event_pump().expect("Cannot get event pump");
+
+    let mut world = World::new();
 
     'running: loop {
         for event in event_pump.poll_iter() {
@@ -49,6 +55,9 @@ fn main() {
 
         canvas.set_draw_color(Color::RGB(0, 0, 0));
         canvas.clear();
+
+        world.do_tick(&mut canvas).expect("World collapsed");
+
         canvas.present();
     }
 }
