@@ -1,0 +1,9 @@
+[package]
+name = "engine_3d"
+version = "0.1.0"
+authors = ["Ben Ashford <benashford@users.noreply.github.com>"]
+edition = "2018"
+publish = false
+
+[dependencies]
+sdl2 = "0.34"
