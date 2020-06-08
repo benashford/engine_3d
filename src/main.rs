@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use sdl2::{event::Event, keyboard::Keycode, pixels::Color};
 
 mod world;
@@ -21,6 +23,8 @@ fn main() {
         .expect("Cannot get canvas");
 
     let mut tick = 0;
+    let start_time = Instant::now();
+    let mut prev_loop_inst = start_time;
 
     let mut event_pump = sdl_context.event_pump().expect("Cannot get event pump");
 
@@ -38,6 +42,12 @@ fn main() {
             }
         }
 
+        let this_loop_inst = Instant::now();
+        let dur = this_loop_inst - start_time;
+        let frame_dur = this_loop_inst - prev_loop_inst;
+        prev_loop_inst = this_loop_inst;
+        let frames_per_sec = 1.0 / frame_dur.as_secs_f32();
+
         {
             // Update the window title.
             let window = canvas.window_mut();
@@ -45,8 +55,8 @@ fn main() {
             let position = window.position();
             let size = window.size();
             let title = format!(
-                "Window - pos({}x{}), size({}x{}): {}",
-                position.0, position.1, size.0, size.1, tick
+                "Window - pos({}x{}), size({}x{}): {} (fps: {:.2})",
+                position.0, position.1, size.0, size.1, tick, frames_per_sec
             );
             window.set_title(&title).expect("Cannot set title");
 
@@ -56,7 +66,9 @@ fn main() {
         canvas.set_draw_color(Color::RGB(0, 0, 0));
         canvas.clear();
 
-        world.do_tick(&mut canvas).expect("World collapsed");
+        world
+            .do_tick(&mut canvas, dur.as_secs_f32())
+            .expect("World collapsed");
 
         canvas.present();
     }
