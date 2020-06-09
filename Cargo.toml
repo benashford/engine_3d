@@ -7,3 +7,4 @@ publish = false
 
 [dependencies]
 sdl2 = "0.34"
+snafu = "0.6"

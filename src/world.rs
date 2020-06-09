@@ -1,11 +1,41 @@
 use std::f32::consts::PI;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Error as IOError};
 use std::ops::{Index, IndexMut, Mul};
 
 use sdl2::{pixels::Color, rect::Point, render::Canvas, video::Window};
 
+use snafu::Snafu;
+
 const FOV: f32 = 90.0;
 const FAR: f32 = 1000.0;
 const NEAR: f32 = 0.1;
+
+#[derive(Debug, Snafu)]
+pub(crate) enum WorldError {
+    #[snafu(display("IO Error: {}", e))]
+    IO { e: IOError },
+    #[snafu(display("SDL Error: {}", msg))]
+    SDL { msg: String },
+    #[snafu(display("Cannot parse object file: {}", msg))]
+    Parsing { msg: String },
+}
+
+impl WorldError {
+    fn sdl_error(msg: impl Into<String>) -> Self {
+        WorldError::SDL { msg: msg.into() }
+    }
+
+    fn parsing(msg: impl Into<String>) -> Self {
+        WorldError::Parsing { msg: msg.into() }
+    }
+}
+
+impl From<IOError> for WorldError {
+    fn from(from: IOError) -> Self {
+        WorldError::IO { e: from }
+    }
+}
 
 pub(crate) struct World {
     mesh_cube: Mesh,
@@ -13,43 +43,24 @@ pub(crate) struct World {
 }
 
 impl World {
-    pub(crate) fn new() -> Self {
-        let mesh_cube = Mesh::new(vec![
-            // SOUTH
-            Triangle::from_points(0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0),
-            Triangle::from_points(0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0),
-            // EAST
-            Triangle::from_points(1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
-            Triangle::from_points(1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0),
-            // NORTH
-            Triangle::from_points(1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0),
-            Triangle::from_points(1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0),
-            // WEST
-            Triangle::from_points(0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0),
-            Triangle::from_points(0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0),
-            // TOP
-            Triangle::from_points(0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0),
-            Triangle::from_points(0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0),
-            // BOTTOM
-            Triangle::from_points(1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
-            Triangle::from_points(1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0),
-        ]);
+    pub(crate) fn new() -> Result<Self, WorldError> {
+        let mesh_cube = Mesh::from_object_file("VideoShip.obj")?;
         let mut mat_proj = Mat4x4::default();
         mat_proj[2][2] = FAR / (FAR - NEAR);
         mat_proj[3][2] = (-FAR * NEAR) / (FAR - NEAR);
         mat_proj[2][3] = 1.0;
         mat_proj[3][3] = 0.0;
-        World {
+        Ok(World {
             mesh_cube,
             mat_proj,
-        }
+        })
     }
 
     pub(crate) fn do_tick(
         &mut self,
         canvas: &mut Canvas<Window>,
         elapsed_time: f32,
-    ) -> Result<(), String> {
+    ) -> Result<(), WorldError> {
         let window = canvas.window();
         let (window_width, window_height) = window.size();
         let aspect_ratio = window_height as f32 / window_width as f32;
@@ -76,14 +87,14 @@ impl World {
         mat_rot_x[3][3] = 1.0;
 
         for tri in self.mesh_cube.0.iter() {
-            let tri_rotated_z = tri * &mat_rot_z;
-            let mut tri_rotated_zx = &tri_rotated_z * &mat_rot_x;
+            let tri_rotated_z = *tri * &mat_rot_z;
+            let mut tri_rotated_zx = tri_rotated_z * &mat_rot_x;
 
             tri_rotated_zx[0].z += 3.0;
             tri_rotated_zx[1].z += 3.0;
             tri_rotated_zx[2].z += 3.0;
 
-            let mut tri_projected = &tri_rotated_zx * &self.mat_proj;
+            let mut tri_projected = tri_rotated_zx * &self.mat_proj;
 
             tri_projected[0].x += 1.0;
             tri_projected[1].x += 1.0;
@@ -99,7 +110,7 @@ impl World {
             tri_projected[2].y *= 0.5 * window_height as f32;
 
             canvas.set_draw_color(Color::RGB(255, 255, 255));
-            tri_projected.draw(canvas)?;
+            tri_projected.draw(canvas).map_err(WorldError::sdl_error)?;
         }
 
         Ok(())
@@ -139,12 +150,18 @@ impl Mul<&Mat4x4> for Vec3D {
     }
 }
 
-#[derive(Debug)]
-struct Triangle([Vec3D; 3]);
+#[derive(Debug, Clone, Copy, Default)]
+struct Triangle {
+    p: [Vec3D; 3],
+    col: f32,
+}
 
 impl Triangle {
     fn new(a: Vec3D, b: Vec3D, c: Vec3D) -> Self {
-        Triangle([a, b, c])
+        Triangle {
+            p: [a, b, c],
+            ..Default::default()
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -159,11 +176,14 @@ impl Triangle {
         cy: f32,
         cz: f32,
     ) -> Self {
-        Triangle([
-            Vec3D::new(ax, ay, az),
-            Vec3D::new(bx, by, bz),
-            Vec3D::new(cx, cy, cz),
-        ])
+        Triangle {
+            p: [
+                Vec3D::new(ax, ay, az),
+                Vec3D::new(bx, by, bz),
+                Vec3D::new(cx, cy, cz),
+            ],
+            ..Default::default()
+        }
     }
 
     fn draw(&self, canvas: &mut Canvas<Window>) -> Result<(), String> {
@@ -181,17 +201,17 @@ impl Index<usize> for Triangle {
     type Output = Vec3D;
 
     fn index(&self, index: usize) -> &Self::Output {
-        &self.0[index]
+        &self.p[index]
     }
 }
 
 impl IndexMut<usize> for Triangle {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.0[index]
+        &mut self.p[index]
     }
 }
 
-impl Mul<&Mat4x4> for &Triangle {
+impl Mul<&Mat4x4> for Triangle {
     type Output = Triangle;
 
     fn mul(self, rhs: &Mat4x4) -> Self::Output {
@@ -205,6 +225,51 @@ struct Mesh(Vec<Triangle>);
 impl Mesh {
     fn new(triangles: Vec<Triangle>) -> Self {
         Mesh(triangles)
+    }
+
+    fn from_object_file(filename: &str) -> Result<Self, WorldError> {
+        let file = File::open(filename)?;
+        let mut verts = Vec::new();
+        let mut triangles = Vec::new();
+        for line in BufReader::new(file).lines() {
+            let line = line?;
+            let parse_float = |s: &str| {
+                s.parse()
+                    .map_err(|e| WorldError::parsing(format!("Cannot parse {}, {}", line, e)))
+            };
+            let parse_int = |s: &str| {
+                s.parse::<usize>()
+                    .map_err(|e| WorldError::parsing(format!("Cannot parse {}, {}", line, e)))
+            };
+            let mut split_line = line.split(' ');
+            match (
+                split_line.next(),
+                split_line.next(),
+                split_line.next(),
+                split_line.next(),
+            ) {
+                (Some("#"), _, _, _) => (),
+                (Some("v"), Some(v1), Some(v2), Some(v3)) => verts.push(Vec3D::new(
+                    parse_float(v1)?,
+                    parse_float(v2)?,
+                    parse_float(v3)?,
+                )),
+                (Some("s"), _, _, _) => (),
+                (Some("f"), Some(f1), Some(f2), Some(f3)) => triangles.push(Triangle::new(
+                    verts[parse_int(f1)? - 1],
+                    verts[parse_int(f2)? - 1],
+                    verts[parse_int(f3)? - 1],
+                )),
+                _ => {
+                    return Err(WorldError::parsing(format!(
+                        "Object file not in correct format: {}",
+                        line
+                    )))
+                }
+            }
+        }
+
+        Ok(Mesh(triangles))
     }
 }
 

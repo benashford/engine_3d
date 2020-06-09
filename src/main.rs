@@ -6,7 +6,7 @@ mod world;
 
 use world::World;
 
-fn main() {
+fn main() -> Result<(), String> {
     let sdl_context = sdl2::init().expect("Cannot initialise SDL");
     let video_subsystem = sdl_context.video().expect("Canot get video");
 
@@ -28,7 +28,7 @@ fn main() {
 
     let mut event_pump = sdl_context.event_pump().expect("Cannot get event pump");
 
-    let mut world = World::new();
+    let mut world = World::new().map_err(|e| e.to_string())?;
 
     'running: loop {
         for event in event_pump.poll_iter() {
@@ -68,8 +68,10 @@ fn main() {
 
         world
             .do_tick(&mut canvas, dur.as_secs_f32())
-            .expect("World collapsed");
+            .map_err(|e| e.to_string())?;
 
         canvas.present();
     }
+
+    Ok(())
 }
