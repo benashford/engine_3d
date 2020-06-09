@@ -119,7 +119,7 @@ impl Vec3D {
     }
 }
 
-impl Mul<&Mat4x4> for &Vec3D {
+impl Mul<&Mat4x4> for Vec3D {
     type Output = Vec3D;
 
     #[allow(clippy::suspicious_arithmetic_impl)]
@@ -171,6 +171,7 @@ impl Triangle {
             Point::new(self[0].x as i32, self[0].y as i32),
             Point::new(self[1].x as i32, self[1].y as i32),
             Point::new(self[2].x as i32, self[2].y as i32),
+            Point::new(self[0].x as i32, self[0].y as i32),
         ];
         canvas.draw_lines(&points[..])
     }
@@ -194,7 +195,7 @@ impl Mul<&Mat4x4> for &Triangle {
     type Output = Triangle;
 
     fn mul(self, rhs: &Mat4x4) -> Self::Output {
-        Triangle::new(&self[0] * &rhs, &self[1] * &rhs, &self[2] * &rhs)
+        Triangle::new(self[0] * rhs, self[1] * rhs, self[2] * rhs)
     }
 }
 
