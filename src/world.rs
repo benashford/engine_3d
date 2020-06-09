@@ -4,7 +4,12 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Error as IOError};
 use std::ops::{Index, IndexMut, Mul, Sub};
 
-use sdl2::{pixels::Color, rect::Point, render::Canvas, video::Window};
+use sdl2::{
+    pixels::Color,
+    rect::Point,
+    render::{BlendMode, Canvas},
+    video::Window,
+};
 
 use snafu::Snafu;
 
@@ -155,7 +160,7 @@ impl World {
         });
 
         for tri in self.triangles_to_raster.iter() {
-            tri.draw(canvas)?;
+            // tri.draw(canvas)?;
             tri.fill(canvas)?;
         }
 
@@ -240,6 +245,7 @@ impl Triangle {
 
     fn fill(&self, canvas: &mut Canvas<Window>) -> Result<(), WorldError> {
         canvas.set_draw_color(Color::RGB(self.col, self.col, self.col));
+        canvas.set_blend_mode(BlendMode::None);
         let points = [
             Point::new(self[0].x as i32, self[0].y as i32),
             Point::new(self[1].x as i32, self[1].y as i32),

@@ -30,7 +30,7 @@ pub(crate) fn fill_polygon(canvas: &mut Canvas<Window>, points: &[Point]) -> Res
         right_cnt = 0;
     }
 
-    let mut start_x = (points[top_cnt].x + centre.x) << 16;
+    let mut start_x = (points[top_cnt].x) << 16;
     let mut end_x = start_x;
 
     let mut cnt_y = points[top_cnt].y;
@@ -50,10 +50,7 @@ pub(crate) fn fill_polygon(canvas: &mut Canvas<Window>, points: &[Point]) -> Res
 
     while num_points_proc < num_points {
         while cnt_y < points[left_cnt].y && cnt_y < points[right_cnt].y {
-            canvas.draw_line(
-                (start_x >> 16, cnt_y + centre.y),
-                (end_x >> 16, cnt_y + centre.y),
-            )?;
+            canvas.draw_line((start_x >> 16, cnt_y), (end_x >> 16, cnt_y))?;
             cnt_y += 1;
             start_x += left_slope;
             end_x += right_slope;
@@ -69,7 +66,7 @@ pub(crate) fn fill_polygon(canvas: &mut Canvas<Window>, points: &[Point]) -> Res
                 left_slope = ((points[left_cnt].x - points[top_cnt].x) << 16)
                     / (points[left_cnt].y - points[top_cnt].y);
             }
-            start_x = (points[top_cnt].x + centre.x) << 16;
+            start_x = (points[top_cnt].x) << 16;
             num_points_proc += 1;
         }
         if points[right_cnt].y <= cnt_y {
@@ -82,13 +79,10 @@ pub(crate) fn fill_polygon(canvas: &mut Canvas<Window>, points: &[Point]) -> Res
                 right_slope = ((points[right_cnt].x - points[top_cnt].x) << 16)
                     / (points[right_cnt].y - points[top_cnt].y);
             }
-            end_x = (points[top_cnt].x + centre.x) << 16;
+            end_x = (points[top_cnt].x) << 16;
             num_points_proc += 1;
         }
-        canvas.draw_line(
-            (start_x >> 16, cnt_y + centre.y),
-            (end_x >> 16, cnt_y + centre.y),
-        )?;
+        canvas.draw_line((start_x >> 16, cnt_y), (end_x >> 16, cnt_y))?;
     }
 
     Ok(())
