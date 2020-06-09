@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use sdl2::{event::Event, keyboard::Keycode, pixels::Color};
 
+mod sdl_ext;
 mod world;
 
 use world::World;

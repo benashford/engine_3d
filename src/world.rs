@@ -1,11 +1,14 @@
+use std::cmp::Ordering;
 use std::f32::consts::PI;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Error as IOError};
-use std::ops::{Index, IndexMut, Mul};
+use std::ops::{Index, IndexMut, Mul, Sub};
 
 use sdl2::{pixels::Color, rect::Point, render::Canvas, video::Window};
 
 use snafu::Snafu;
+
+use super::sdl_ext::fill_polygon;
 
 const FOV: f32 = 90.0;
 const FAR: f32 = 1000.0;
@@ -40,6 +43,10 @@ impl From<IOError> for WorldError {
 pub(crate) struct World {
     mesh_cube: Mesh,
     mat_proj: Mat4x4,
+
+    triangles_to_raster: Vec<Triangle>,
+
+    camera: Vec3D,
 }
 
 impl World {
@@ -53,6 +60,8 @@ impl World {
         Ok(World {
             mesh_cube,
             mat_proj,
+            triangles_to_raster: Vec::new(),
+            camera: Vec3D::default(),
         })
     }
 
@@ -86,31 +95,68 @@ impl World {
         mat_rot_x[2][2] = (theta * 0.5).cos();
         mat_rot_x[3][3] = 1.0;
 
+        self.triangles_to_raster.clear();
+
         for tri in self.mesh_cube.0.iter() {
             let tri_rotated_z = *tri * &mat_rot_z;
             let mut tri_rotated_zx = tri_rotated_z * &mat_rot_x;
 
-            tri_rotated_zx[0].z += 3.0;
-            tri_rotated_zx[1].z += 3.0;
-            tri_rotated_zx[2].z += 3.0;
+            tri_rotated_zx[0].z += 8.0;
+            tri_rotated_zx[1].z += 8.0;
+            tri_rotated_zx[2].z += 8.0;
 
-            let mut tri_projected = tri_rotated_zx * &self.mat_proj;
+            let line_1 = tri_rotated_zx[1] - tri_rotated_zx[0];
+            let line_2 = tri_rotated_zx[2] - tri_rotated_zx[0];
 
-            tri_projected[0].x += 1.0;
-            tri_projected[1].x += 1.0;
-            tri_projected[2].x += 1.0;
-            tri_projected[0].y += 1.0;
-            tri_projected[1].y += 1.0;
-            tri_projected[2].y += 1.0;
-            tri_projected[0].x *= 0.5 * window_width as f32;
-            tri_projected[1].x *= 0.5 * window_width as f32;
-            tri_projected[2].x *= 0.5 * window_width as f32;
-            tri_projected[0].y *= 0.5 * window_height as f32;
-            tri_projected[1].y *= 0.5 * window_height as f32;
-            tri_projected[2].y *= 0.5 * window_height as f32;
+            let mut normal = Vec3D::new(
+                line_1.y * line_2.z - line_1.z * line_2.y,
+                line_1.z * line_2.x - line_1.x * line_2.z,
+                line_1.x * line_2.y - line_1.y * line_2.x,
+            );
 
-            canvas.set_draw_color(Color::RGB(255, 255, 255));
-            tri_projected.draw(canvas).map_err(WorldError::sdl_error)?;
+            normal.normalise();
+
+            if normal.x * (tri_rotated_zx[0].x - self.camera.x)
+                + normal.y * (tri_rotated_zx[0].y - self.camera.y)
+                + normal.z * (tri_rotated_zx[0].z - self.camera.z)
+                < 0.0
+            {
+                let mut light_direction = Vec3D::new(0.0, 0.0, -1.0);
+                light_direction.normalise();
+                // How similar is normal to light direction
+                let dp = normal.x * light_direction.x
+                    + normal.y * light_direction.y
+                    + normal.z * light_direction.z;
+
+                let mut tri_projected = tri_rotated_zx * &self.mat_proj;
+                tri_projected.col = (255.0 * dp) as u8;
+
+                tri_projected[0].x += 1.0;
+                tri_projected[1].x += 1.0;
+                tri_projected[2].x += 1.0;
+                tri_projected[0].y += 1.0;
+                tri_projected[1].y += 1.0;
+                tri_projected[2].y += 1.0;
+                tri_projected[0].x *= 0.5 * window_width as f32;
+                tri_projected[1].x *= 0.5 * window_width as f32;
+                tri_projected[2].x *= 0.5 * window_width as f32;
+                tri_projected[0].y *= 0.5 * window_height as f32;
+                tri_projected[1].y *= 0.5 * window_height as f32;
+                tri_projected[2].y *= 0.5 * window_height as f32;
+
+                self.triangles_to_raster.push(tri_projected);
+            }
+        }
+
+        self.triangles_to_raster.sort_by(|t1, t2| {
+            let z1 = (t1[0].z + t1[1].z + t1[2].z) / 3.0;
+            let z2 = (t2[0].z + t2[1].z + t2[2].z) / 3.0;
+            z1.partial_cmp(&z2).unwrap_or(Ordering::Equal)
+        });
+
+        for tri in self.triangles_to_raster.iter() {
+            tri.draw(canvas)?;
+            tri.fill(canvas)?;
         }
 
         Ok(())
@@ -127,6 +173,13 @@ struct Vec3D {
 impl Vec3D {
     fn new(x: f32, y: f32, z: f32) -> Self {
         Vec3D { x, y, z }
+    }
+
+    fn normalise(&mut self) {
+        let l = (self.x * self.x + self.y * self.y + self.z * self.z).sqrt();
+        self.x /= l;
+        self.y /= l;
+        self.z /= l;
     }
 }
 
@@ -150,10 +203,18 @@ impl Mul<&Mat4x4> for Vec3D {
     }
 }
 
+impl Sub<Vec3D> for Vec3D {
+    type Output = Vec3D;
+
+    fn sub(self, rhs: Vec3D) -> Self::Output {
+        Vec3D::new(self.x - rhs.x, self.y - rhs.y, self.z - rhs.z)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct Triangle {
     p: [Vec3D; 3],
-    col: f32,
+    col: u8,
 }
 
 impl Triangle {
@@ -164,36 +225,29 @@ impl Triangle {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn from_points(
-        ax: f32,
-        ay: f32,
-        az: f32,
-        bx: f32,
-        by: f32,
-        bz: f32,
-        cx: f32,
-        cy: f32,
-        cz: f32,
-    ) -> Self {
-        Triangle {
-            p: [
-                Vec3D::new(ax, ay, az),
-                Vec3D::new(bx, by, bz),
-                Vec3D::new(cx, cy, cz),
-            ],
-            ..Default::default()
-        }
-    }
-
-    fn draw(&self, canvas: &mut Canvas<Window>) -> Result<(), String> {
+    fn draw(&self, canvas: &mut Canvas<Window>) -> Result<(), WorldError> {
+        canvas.set_draw_color(Color::RGB(255, self.col, self.col));
         let points = [
             Point::new(self[0].x as i32, self[0].y as i32),
             Point::new(self[1].x as i32, self[1].y as i32),
             Point::new(self[2].x as i32, self[2].y as i32),
             Point::new(self[0].x as i32, self[0].y as i32),
         ];
-        canvas.draw_lines(&points[..])
+        canvas
+            .draw_lines(&points[..])
+            .map_err(|e| WorldError::sdl_error(format!("Cannot draw lines: {}", e)))
+    }
+
+    fn fill(&self, canvas: &mut Canvas<Window>) -> Result<(), WorldError> {
+        canvas.set_draw_color(Color::RGB(self.col, self.col, self.col));
+        let points = [
+            Point::new(self[0].x as i32, self[0].y as i32),
+            Point::new(self[1].x as i32, self[1].y as i32),
+            Point::new(self[2].x as i32, self[2].y as i32),
+            Point::new(self[0].x as i32, self[0].y as i32),
+        ];
+        fill_polygon(canvas, &points[..])
+            .map_err(|e| WorldError::sdl_error(format!("Cannot fill polygon: {}", e)))
     }
 }
 
