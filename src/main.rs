@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use sdl2::{event::Event, keyboard::Keycode, pixels::Color};
+use sdl2::{event::Event, keyboard::Keycode, pixels::Color, render::BlendMode};
 
 mod sdl_ext;
 mod world;
@@ -65,6 +65,7 @@ fn main() -> Result<(), String> {
         }
 
         canvas.set_draw_color(Color::RGB(0, 0, 0));
+        canvas.set_blend_mode(BlendMode::None);
         canvas.clear();
 
         world

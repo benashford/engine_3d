@@ -156,7 +156,7 @@ impl World {
         self.triangles_to_raster.sort_by(|t1, t2| {
             let z1 = (t1[0].z + t1[1].z + t1[2].z) / 3.0;
             let z2 = (t2[0].z + t2[1].z + t2[2].z) / 3.0;
-            z1.partial_cmp(&z2).unwrap_or(Ordering::Equal)
+            z2.partial_cmp(&z1).unwrap_or(Ordering::Equal)
         });
 
         for tri in self.triangles_to_raster.iter() {
@@ -245,7 +245,7 @@ impl Triangle {
 
     fn fill(&self, canvas: &mut Canvas<Window>) -> Result<(), WorldError> {
         canvas.set_draw_color(Color::RGB(self.col, self.col, self.col));
-        canvas.set_blend_mode(BlendMode::None);
+
         let points = [
             Point::new(self[0].x as i32, self[0].y as i32),
             Point::new(self[1].x as i32, self[1].y as i32),
