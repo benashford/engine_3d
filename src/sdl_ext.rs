@@ -4,11 +4,6 @@ pub(crate) fn fill_polygon(canvas: &mut Canvas<Window>, points: &[Point]) -> Res
     let num_points = points.len();
     let mut num_points_proc = 1;
 
-    let (sum_x, sum_y) = points
-        .iter()
-        .fold((0, 0), |(sx, sy), pt| (sx + pt.x, sy + pt.y));
-    let centre = Point::new(sum_x / num_points as i32, sum_y / num_points as i32);
-
     let mut top_y = points[0].y;
     let mut top_cnt = 0;
 
