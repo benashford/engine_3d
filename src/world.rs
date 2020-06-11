@@ -1,15 +1,19 @@
-use std::cmp::Ordering;
+use std::cmp::{self, Ordering};
+use std::collections::VecDeque;
 use std::f32::consts::PI;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Error as IOError};
-use std::ops::{Index, IndexMut, Mul, Sub};
+use std::ops::{Add, AddAssign, Div, DivAssign, Index, IndexMut, Mul, MulAssign, Sub, SubAssign};
 
 use sdl2::{
+    keyboard::Keycode,
     pixels::Color,
     rect::Point,
     render::{BlendMode, Canvas},
     video::Window,
 };
+
+use smallvec::SmallVec;
 
 use snafu::Snafu;
 
@@ -45,29 +49,53 @@ impl From<IOError> for WorldError {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct World {
     mesh_cube: Mesh,
-    mat_proj: Mat4x4,
 
     triangles_to_raster: Vec<Triangle>,
+    triangles_to_clip: VecDeque<Triangle>,
 
     camera: Vec3D,
+    look_dir: Vec3D,
+
+    yaw: f32,
+    theta: f32,
 }
 
 impl World {
     pub(crate) fn new() -> Result<Self, WorldError> {
-        let mesh_cube = Mesh::from_object_file("VideoShip.obj")?;
-        let mut mat_proj = Mat4x4::default();
-        mat_proj[2][2] = FAR / (FAR - NEAR);
-        mat_proj[3][2] = (-FAR * NEAR) / (FAR - NEAR);
-        mat_proj[2][3] = 1.0;
-        mat_proj[3][3] = 0.0;
+        let mesh_cube = Mesh::from_object_file("mountains.obj")?;
+
         Ok(World {
             mesh_cube,
-            mat_proj,
             triangles_to_raster: Vec::new(),
+            triangles_to_clip: VecDeque::new(),
             camera: Vec3D::default(),
+            look_dir: Vec3D::default(),
+            yaw: 0.0,
+            theta: 0.0,
         })
+    }
+
+    pub(crate) fn handle_key(&mut self, keycode: Keycode, elapsed_time: f32) {
+        match keycode {
+            Keycode::Up => self.camera.y += 8.0 * elapsed_time,
+            Keycode::Down => self.camera.y -= 8.0 * elapsed_time,
+            Keycode::Left => self.camera.x -= 8.0 * elapsed_time,
+            Keycode::Right => self.camera.x += 8.0 * elapsed_time,
+            Keycode::W => {
+                let forward = self.look_dir * (8.0 * elapsed_time);
+                self.camera += forward;
+            }
+            Keycode::S => {
+                let forward = self.look_dir * (8.0 * elapsed_time);
+                self.camera -= forward;
+            }
+            Keycode::A => self.yaw -= 2.0 * elapsed_time,
+            Keycode::D => self.yaw += 2.0 * elapsed_time,
+            _ => (),
+        }
     }
 
     pub(crate) fn do_tick(
@@ -78,78 +106,85 @@ impl World {
         let window = canvas.window();
         let (window_width, window_height) = window.size();
         let aspect_ratio = window_height as f32 / window_width as f32;
-        let fov_rad = 1.0 / (FOV * 0.5 / 180.0 * PI).tan();
-        self.mat_proj[0][0] = aspect_ratio * fov_rad;
-        self.mat_proj[1][1] = fov_rad;
+        let mat_proj = Mat4x4::projection(90.0, aspect_ratio, NEAR, FAR);
 
-        let mut mat_rot_z = Mat4x4::default();
-        let mut mat_rot_x = Mat4x4::default();
+        let mat_rot_z = Mat4x4::rotation_z(self.theta / 2.0);
+        let mat_rot_x = Mat4x4::rotation_x(self.theta);
 
-        let theta = 1.0 * elapsed_time;
-        mat_rot_z[0][0] = theta.cos();
-        mat_rot_z[0][1] = theta.sin();
-        mat_rot_z[1][0] = -theta.sin();
-        mat_rot_z[1][1] = theta.cos();
-        mat_rot_z[2][2] = 1.0;
-        mat_rot_z[3][3] = 1.0;
+        let mat_trans = Mat4x4::translation(0.0, 0.0, 5.0);
 
-        mat_rot_x[0][0] = 1.0;
-        mat_rot_x[1][1] = (theta * 0.5).cos();
-        mat_rot_x[1][2] = (theta * 0.5).sin();
-        mat_rot_x[2][1] = -(theta * 0.5).sin();
-        mat_rot_x[2][2] = (theta * 0.5).cos();
-        mat_rot_x[3][3] = 1.0;
+        let mat_world = Mat4x4::identity();
+        let mat_world = mat_rot_z * mat_rot_x;
+        let mat_world = mat_world * mat_trans;
+
+        let up = Vec3D::new(0.0, 1.0, 0.0);
+        let target = Vec3D::new(0.0, 0.0, 1.0);
+
+        let mat_camera_rot = Mat4x4::rotation_y(self.yaw);
+        self.look_dir = target * mat_camera_rot;
+        let target = self.camera + self.look_dir;
+        let mat_camera = self.camera.point_at(&target, &up);
+
+        let mat_view = mat_camera.quick_inverse();
 
         self.triangles_to_raster.clear();
 
         for tri in self.mesh_cube.0.iter() {
-            let tri_rotated_z = *tri * &mat_rot_z;
-            let mut tri_rotated_zx = tri_rotated_z * &mat_rot_x;
+            let mut tri_transformed = Triangle::default();
+            tri_transformed[0] = tri[0] * mat_world;
+            tri_transformed[1] = tri[1] * mat_world;
+            tri_transformed[2] = tri[2] * mat_world;
 
-            tri_rotated_zx[0].z += 8.0;
-            tri_rotated_zx[1].z += 8.0;
-            tri_rotated_zx[2].z += 8.0;
+            let line_1 = tri_transformed[1] - tri_transformed[0];
+            let line_2 = tri_transformed[2] - tri_transformed[0];
 
-            let line_1 = tri_rotated_zx[1] - tri_rotated_zx[0];
-            let line_2 = tri_rotated_zx[2] - tri_rotated_zx[0];
+            let normal = line_1.cross_product(&line_2).normalise();
+            let camera_ray = tri_transformed[0] - self.camera;
 
-            let mut normal = Vec3D::new(
-                line_1.y * line_2.z - line_1.z * line_2.y,
-                line_1.z * line_2.x - line_1.x * line_2.z,
-                line_1.x * line_2.y - line_1.y * line_2.x,
-            );
+            if normal.dot_product(&camera_ray) < 0.0 {
+                let light_direction = Vec3D::new(0.0, 1.0, -1.0).normalise();
+                let mut dp = light_direction.dot_product(&normal);
+                if dp < 0.1 {
+                    dp = 0.1
+                }
+                tri_transformed.col = (255.0 * dp) as u8;
+                tri_transformed[0] *= mat_view;
+                tri_transformed[1] *= mat_view;
+                tri_transformed[2] *= mat_view;
 
-            normal.normalise();
+                let plane_p = Vec3D::new(0.0, 0.0, 0.1);
+                let plane_n = Vec3D::new(0.0, 0.0, 1.0);
+                let clipped_triangles = tri_transformed.clip_against_plane(&plane_p, &plane_n);
 
-            if normal.x * (tri_rotated_zx[0].x - self.camera.x)
-                + normal.y * (tri_rotated_zx[0].y - self.camera.y)
-                + normal.z * (tri_rotated_zx[0].z - self.camera.z)
-                < 0.0
-            {
-                let mut light_direction = Vec3D::new(0.0, 0.0, -1.0);
-                light_direction.normalise();
-                // How similar is normal to light direction
-                let dp = normal.x * light_direction.x
-                    + normal.y * light_direction.y
-                    + normal.z * light_direction.z;
+                for mut clipped_tri in clipped_triangles {
+                    clipped_tri[0] *= mat_proj;
+                    clipped_tri[1] *= mat_proj;
+                    clipped_tri[2] *= mat_proj;
 
-                let mut tri_projected = tri_rotated_zx * &self.mat_proj;
-                tri_projected.col = (255.0 * dp) as u8;
+                    clipped_tri[0] = clipped_tri[0] / clipped_tri[0].w;
+                    clipped_tri[1] = clipped_tri[1] / clipped_tri[1].w;
+                    clipped_tri[2] = clipped_tri[2] / clipped_tri[2].w;
 
-                tri_projected[0].x += 1.0;
-                tri_projected[1].x += 1.0;
-                tri_projected[2].x += 1.0;
-                tri_projected[0].y += 1.0;
-                tri_projected[1].y += 1.0;
-                tri_projected[2].y += 1.0;
-                tri_projected[0].x *= 0.5 * window_width as f32;
-                tri_projected[1].x *= 0.5 * window_width as f32;
-                tri_projected[2].x *= 0.5 * window_width as f32;
-                tri_projected[0].y *= 0.5 * window_height as f32;
-                tri_projected[1].y *= 0.5 * window_height as f32;
-                tri_projected[2].y *= 0.5 * window_height as f32;
+                    clipped_tri[0].x *= -1.0;
+                    clipped_tri[1].x *= -1.0;
+                    clipped_tri[2].x *= -1.0;
+                    clipped_tri[0].y *= -1.0;
+                    clipped_tri[1].y *= -1.0;
+                    clipped_tri[2].y *= -1.0;
 
-                self.triangles_to_raster.push(tri_projected);
+                    let offset_view = Vec3D::new(1.0, 1.0, 0.0);
+                    clipped_tri[0] += offset_view;
+                    clipped_tri[1] += offset_view;
+                    clipped_tri[2] += offset_view;
+                    clipped_tri[0].x *= 0.5 * window_width as f32;
+                    clipped_tri[0].y *= 0.5 * window_height as f32;
+                    clipped_tri[1].x *= 0.5 * window_width as f32;
+                    clipped_tri[1].y *= 0.5 * window_height as f32;
+                    clipped_tri[2].x *= 0.5 * window_width as f32;
+                    clipped_tri[2].y *= 0.5 * window_height as f32;
+
+                    self.triangles_to_raster.push(clipped_tri);
+                }
             }
         }
 
@@ -159,52 +194,178 @@ impl World {
             z2.partial_cmp(&z1).unwrap_or(Ordering::Equal)
         });
 
-        for tri in self.triangles_to_raster.iter() {
-            // tri.draw(canvas)?;
-            tri.fill(canvas)?;
+        for tri in self.triangles_to_raster.drain(..) {
+            self.triangles_to_clip.push_back(tri);
+            let mut new_triangles = 1;
+            for p in 0..4 {
+                while new_triangles > 0 {
+                    let test = self
+                        .triangles_to_clip
+                        .pop_front()
+                        .expect("Already tested for...");
+                    new_triangles -= 1;
+                    let (plane_p, plane_n) = match p {
+                        0 => (Vec3D::new(0.0, 0.0, 0.0), Vec3D::new(0.0, 1.0, 0.0)),
+                        1 => (
+                            Vec3D::new(0.0, window_height as f32 - 1.0, 0.0),
+                            Vec3D::new(0.0, -1.0, 0.0),
+                        ),
+                        2 => (Vec3D::new(0.0, 0.0, 0.0), Vec3D::new(1.0, 0.0, 0.0)),
+                        3 => (
+                            Vec3D::new(window_width as f32 - 1.0, 0.0, 0.0),
+                            Vec3D::new(-1.0, 0.0, 0.0),
+                        ),
+                        x => unreachable!(),
+                    };
+                    self.triangles_to_clip
+                        .extend(test.clip_against_plane(&plane_p, &plane_n));
+                }
+                new_triangles = self.triangles_to_clip.len();
+            }
+
+            for tri in self.triangles_to_clip.drain(..) {
+                tri.fill(canvas)?;
+            }
         }
 
         Ok(())
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 struct Vec3D {
     x: f32,
     y: f32,
     z: f32,
+    w: f32,
 }
 
 impl Vec3D {
     fn new(x: f32, y: f32, z: f32) -> Self {
-        Vec3D { x, y, z }
+        Vec3D {
+            x,
+            y,
+            z,
+            ..Default::default()
+        }
     }
 
-    fn normalise(&mut self) {
-        let l = (self.x * self.x + self.y * self.y + self.z * self.z).sqrt();
-        self.x /= l;
-        self.y /= l;
-        self.z /= l;
+    fn len(&self) -> f32 {
+        self.dot_product(self).sqrt()
+    }
+
+    fn normalise(&self) -> Vec3D {
+        let l = self.len();
+        Vec3D::new(self.x / l, self.y / l, self.z / l)
+    }
+
+    fn dot_product(&self, other: &Vec3D) -> f32 {
+        self.x * other.x + self.y * other.y + self.z * other.z
+    }
+
+    fn cross_product(&self, other: &Vec3D) -> Vec3D {
+        Vec3D::new(
+            self.y * other.z - self.z * other.y,
+            self.z * other.x - self.x * other.z,
+            self.x * other.y - self.y * other.x,
+        )
+    }
+
+    fn point_at(&self, target: &Vec3D, up: &Vec3D) -> Mat4x4 {
+        let new_forward = (*target - *self).normalise();
+
+        let a = new_forward * up.dot_product(&new_forward);
+        let new_up = *up - a;
+
+        let new_right = new_up.cross_product(&new_forward);
+        let mut m = Mat4x4::default();
+        m[0][0] = new_right.x;
+        m[0][1] = new_right.y;
+        m[0][2] = new_right.z;
+        m[0][3] = 0.0;
+        m[1][0] = new_up.x;
+        m[1][1] = new_up.y;
+        m[1][2] = new_up.z;
+        m[1][3] = 0.0;
+        m[2][0] = new_forward.x;
+        m[2][1] = new_forward.y;
+        m[2][2] = new_forward.z;
+        m[2][3] = 0.0;
+        m[3][0] = self.x;
+        m[3][1] = self.y;
+        m[3][2] = self.z;
+        m[3][3] = 1.0;
+        m
     }
 }
 
-impl Mul<&Mat4x4> for Vec3D {
+fn intersect_plane(
+    plane_p: &Vec3D,
+    plane_n: &Vec3D,
+    line_start: &Vec3D,
+    line_end: &Vec3D,
+) -> Vec3D {
+    let plane_n = plane_n.normalise();
+    let plane_d = -plane_n.dot_product(plane_p);
+    let ad = line_start.dot_product(&plane_n);
+    let bd = line_end.dot_product(&plane_n);
+    let t = (-plane_d - ad) / (bd - ad);
+    let line_start_to_end = *line_end - *line_start;
+    let line_to_intersect = line_start_to_end * t;
+    *line_start + line_to_intersect
+}
+
+impl Default for Vec3D {
+    fn default() -> Self {
+        Vec3D {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        }
+    }
+}
+
+impl Mul<Mat4x4> for Vec3D {
     type Output = Vec3D;
 
-    #[allow(clippy::suspicious_arithmetic_impl)]
-    fn mul(self, rhs: &Mat4x4) -> Self::Output {
-        let mut x = self.x * rhs[0][0] + self.y * rhs[1][0] + self.z * rhs[2][0] + rhs[3][0];
-        let mut y = self.x * rhs[0][1] + self.y * rhs[1][1] + self.z * rhs[2][1] + rhs[3][1];
-        let mut z = self.x * rhs[0][2] + self.y * rhs[1][2] + self.z * rhs[2][2] + rhs[3][2];
+    fn mul(self, rhs: Mat4x4) -> Self::Output {
+        let x = self.x * rhs[0][0] + self.y * rhs[1][0] + self.z * rhs[2][0] + rhs[3][0];
+        let y = self.x * rhs[0][1] + self.y * rhs[1][1] + self.z * rhs[2][1] + rhs[3][1];
+        let z = self.x * rhs[0][2] + self.y * rhs[1][2] + self.z * rhs[2][2] + rhs[3][2];
         let w = self.x * rhs[0][3] + self.y * rhs[1][3] + self.z * rhs[2][3] + rhs[3][3];
 
-        if w != 0.0 {
-            x /= w;
-            y /= w;
-            z /= w;
-        }
+        Vec3D { x, y, z, w }
+    }
+}
 
-        Vec3D::new(x, y, z)
+impl MulAssign<Mat4x4> for Vec3D {
+    fn mul_assign(&mut self, rhs: Mat4x4) {
+        let x = self.x * rhs[0][0] + self.y * rhs[1][0] + self.z * rhs[2][0] + rhs[3][0];
+        let y = self.x * rhs[0][1] + self.y * rhs[1][1] + self.z * rhs[2][1] + rhs[3][1];
+        let z = self.x * rhs[0][2] + self.y * rhs[1][2] + self.z * rhs[2][2] + rhs[3][2];
+        let w = self.x * rhs[0][3] + self.y * rhs[1][3] + self.z * rhs[2][3] + rhs[3][3];
+
+        self.x = x;
+        self.y = y;
+        self.z = z;
+        self.w = w;
+    }
+}
+
+impl Add<Vec3D> for Vec3D {
+    type Output = Vec3D;
+
+    fn add(self, rhs: Vec3D) -> Self::Output {
+        Vec3D::new(self.x + rhs.x, self.y + rhs.y, self.z + rhs.z)
+    }
+}
+
+impl AddAssign<Vec3D> for Vec3D {
+    fn add_assign(&mut self, rhs: Vec3D) {
+        self.x += rhs.x;
+        self.y += rhs.y;
+        self.z += rhs.z;
     }
 }
 
@@ -213,6 +374,38 @@ impl Sub<Vec3D> for Vec3D {
 
     fn sub(self, rhs: Vec3D) -> Self::Output {
         Vec3D::new(self.x - rhs.x, self.y - rhs.y, self.z - rhs.z)
+    }
+}
+
+impl SubAssign<Vec3D> for Vec3D {
+    fn sub_assign(&mut self, rhs: Vec3D) {
+        self.x -= rhs.x;
+        self.y -= rhs.y;
+        self.z -= rhs.z;
+    }
+}
+
+impl Mul<f32> for Vec3D {
+    type Output = Vec3D;
+
+    fn mul(self, rhs: f32) -> Self::Output {
+        Vec3D::new(self.x * rhs, self.y * rhs, self.z * rhs)
+    }
+}
+
+impl Div<f32> for Vec3D {
+    type Output = Vec3D;
+
+    fn div(self, rhs: f32) -> Self::Output {
+        Vec3D::new(self.x / rhs, self.y / rhs, self.z / rhs)
+    }
+}
+
+impl DivAssign<f32> for Vec3D {
+    fn div_assign(&mut self, rhs: f32) {
+        self.x /= rhs;
+        self.y /= rhs;
+        self.z /= rhs;
     }
 }
 
@@ -255,6 +448,68 @@ impl Triangle {
         fill_polygon(canvas, &points[..])
             .map_err(|e| WorldError::sdl_error(format!("Cannot fill polygon: {}", e)))
     }
+
+    fn clip_against_plane(&self, plane_p: &Vec3D, plane_n: &Vec3D) -> SmallVec<[Triangle; 2]> {
+        let plane_n = plane_n.normalise();
+        let dist = |p: &Vec3D| {
+            let n = p.normalise(); // Unused - but is the same in the original 🤔
+            plane_n.x * p.x + plane_n.y * p.y + plane_n.z * p.z - plane_n.dot_product(plane_p)
+        };
+        let mut inside_points = SmallVec::<[&Vec3D; 3]>::new();
+        let mut outside_points = SmallVec::<[&Vec3D; 3]>::new();
+
+        for idx in 0..3 {
+            let d = dist(&self[idx]);
+            if d >= 0.0 {
+                inside_points.push(&self[idx])
+            } else {
+                outside_points.push(&self[idx])
+            }
+        }
+
+        let inside_points_count = inside_points.len();
+        let outside_points_count = outside_points.len();
+
+        let mut result = SmallVec::new();
+        if inside_points_count == 0 {
+            return result;
+        }
+
+        if inside_points_count == 3 {
+            result.push(*self);
+            return result;
+        }
+
+        if inside_points_count == 1 && outside_points_count == 2 {
+            let mut tri = *self;
+            tri[0] = *inside_points[0];
+            tri[1] = intersect_plane(plane_p, &plane_n, &inside_points[0], &outside_points[0]);
+            tri[2] = intersect_plane(plane_p, &plane_n, &inside_points[0], &outside_points[1]);
+
+            result.push(tri);
+            return result;
+        }
+
+        if inside_points_count == 2 && outside_points_count == 1 {
+            let mut tri_1 = *self;
+            let mut tri_2 = *self;
+
+            tri_1[0] = *inside_points[0];
+            tri_1[1] = *inside_points[1];
+            tri_1[2] = intersect_plane(plane_p, &plane_n, &inside_points[0], &outside_points[0]);
+
+            tri_2[0] = *inside_points[1];
+            tri_2[1] = tri_1[2];
+            tri_2[2] = intersect_plane(plane_p, &plane_n, &inside_points[1], &outside_points[0]);
+
+            result.push(tri_1);
+            result.push(tri_2);
+
+            return result;
+        }
+
+        unreachable!()
+    }
 }
 
 impl Index<usize> for Triangle {
@@ -271,10 +526,10 @@ impl IndexMut<usize> for Triangle {
     }
 }
 
-impl Mul<&Mat4x4> for Triangle {
+impl Mul<Mat4x4> for Triangle {
     type Output = Triangle;
 
-    fn mul(self, rhs: &Mat4x4) -> Self::Output {
+    fn mul(self, rhs: Mat4x4) -> Self::Output {
         Triangle::new(self[0] * rhs, self[1] * rhs, self[2] * rhs)
     }
 }
@@ -333,8 +588,97 @@ impl Mesh {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Copy, Clone, Default)]
 struct Mat4x4([[f32; 4]; 4]);
+
+impl Mat4x4 {
+    fn identity() -> Self {
+        let mut m = Mat4x4::default();
+        m[0][0] = 1.0;
+        m[1][1] = 1.0;
+        m[2][2] = 1.0;
+        m[3][3] = 1.0;
+        m
+    }
+
+    fn rotation_x(angle_rad: f32) -> Self {
+        let mut m = Mat4x4::default();
+        m[0][0] = 1.0;
+        m[1][1] = angle_rad.cos();
+        m[1][2] = angle_rad.sin();
+        m[2][1] = -angle_rad.sin();
+        m[2][2] = angle_rad.cos();
+        m[3][3] = 1.0;
+        m
+    }
+
+    fn rotation_y(angle_rad: f32) -> Self {
+        let mut m = Mat4x4::default();
+        m[0][0] = angle_rad.cos();
+        m[0][2] = angle_rad.sin();
+        m[2][0] = -angle_rad.sin();
+        m[1][1] = 1.0;
+        m[2][2] = angle_rad.cos();
+        m[3][3] = 1.0;
+        m
+    }
+
+    fn rotation_z(angle_rad: f32) -> Self {
+        let mut m = Mat4x4::default();
+        m[0][0] = angle_rad.cos();
+        m[0][1] = angle_rad.sin();
+        m[1][0] = -angle_rad.sin();
+        m[1][1] = angle_rad.cos();
+        m[2][2] = 1.0;
+        m[3][3] = 1.0;
+        m
+    }
+
+    fn translation(x: f32, y: f32, z: f32) -> Self {
+        let mut m = Mat4x4::default();
+        m[0][0] = 1.0;
+        m[1][1] = 1.0;
+        m[2][2] = 1.0;
+        m[3][3] = 1.0;
+        m[3][0] = x;
+        m[3][1] = y;
+        m[3][2] = z;
+        m
+    }
+
+    fn projection(fov_degrees: f32, aspect_ratio: f32, near: f32, far: f32) -> Self {
+        let fov_rad = 1.0 / (FOV * 0.5 / 180.0 * PI).tan();
+        let mut m = Mat4x4::default();
+        m[0][0] = aspect_ratio * fov_rad;
+        m[1][1] = fov_rad;
+        m[2][2] = far / (far - near);
+        m[3][2] = (-far * near) / (far - near);
+        m[2][3] = 1.0;
+        m[3][3] = 0.0;
+        m
+    }
+
+    fn quick_inverse(&self) -> Self {
+        let mut m = Mat4x4::default();
+        m[0][0] = self[0][0];
+        m[0][1] = self[1][0];
+        m[0][2] = self[2][0];
+        m[0][3] = 0.0;
+        m[1][0] = self[0][1];
+        m[1][1] = self[1][1];
+        m[1][2] = self[2][1];
+        m[1][3] = 0.0;
+        m[2][0] = self[0][2];
+        m[2][1] = self[1][2];
+        m[2][2] = self[2][2];
+        m[2][3] = 0.0;
+        m[3][0] = -(self[3][0] * m[0][0] + self[3][1] * m[1][0] + self[3][2] * m[2][0]);
+        m[3][1] = -(self[3][0] * m[0][1] + self[3][1] * m[1][1] + self[3][2] * m[2][1]);
+        m[3][2] = -(self[3][0] * m[0][2] + self[3][1] * m[1][2] + self[3][2] * m[2][2]);
+        m[3][3] = 1.0;
+        m
+    }
+}
 
 impl Index<usize> for Mat4x4 {
     type Output = [f32; 4];
@@ -347,5 +691,22 @@ impl Index<usize> for Mat4x4 {
 impl IndexMut<usize> for Mat4x4 {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         &mut self.0[index]
+    }
+}
+
+impl Mul<Mat4x4> for Mat4x4 {
+    type Output = Mat4x4;
+
+    fn mul(self, rhs: Mat4x4) -> Self::Output {
+        let mut m = Mat4x4::default();
+        for c in 0..4 {
+            for r in 0..4 {
+                m[r][c] = self[r][0] * rhs[0][c]
+                    + self[r][1] * rhs[1][c]
+                    + self[r][2] * rhs[2][c]
+                    + self[r][3] * rhs[3][c];
+            }
+        }
+        m
     }
 }

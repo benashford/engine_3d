@@ -32,6 +32,12 @@ fn main() -> Result<(), String> {
     let mut world = World::new().map_err(|e| e.to_string())?;
 
     'running: loop {
+        let this_loop_inst = Instant::now();
+        let dur = this_loop_inst - start_time;
+        let frame_dur = this_loop_inst - prev_loop_inst;
+        prev_loop_inst = this_loop_inst;
+        let frames_per_sec = 1.0 / frame_dur.as_secs_f32();
+
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit { .. }
@@ -39,15 +45,13 @@ fn main() -> Result<(), String> {
                     keycode: Some(Keycode::Escape),
                     ..
                 } => break 'running,
+                Event::KeyDown {
+                    keycode: Some(keycode),
+                    ..
+                } => world.handle_key(keycode, frame_dur.as_secs_f32()),
                 _ => {}
             }
         }
-
-        let this_loop_inst = Instant::now();
-        let dur = this_loop_inst - start_time;
-        let frame_dur = this_loop_inst - prev_loop_inst;
-        prev_loop_inst = this_loop_inst;
-        let frames_per_sec = 1.0 / frame_dur.as_secs_f32();
 
         {
             // Update the window title.
@@ -69,7 +73,7 @@ fn main() -> Result<(), String> {
         canvas.clear();
 
         world
-            .do_tick(&mut canvas, dur.as_secs_f32())
+            .do_tick(&mut canvas, frame_dur.as_secs_f32())
             .map_err(|e| e.to_string())?;
 
         canvas.present();
