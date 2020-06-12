@@ -16,7 +16,13 @@ use super::sdl_ext::fill_polygon;
 const FAR: f32 = 1000.0;
 const NEAR: f32 = 0.1;
 
-const UP: Vec3D = Vec3D::new(0.0, 1.0, 0.0);
+static UP: Vec3D = Vec3D::new(0.0, 1.0, 0.0);
+static TARGET: Vec3D = Vec3D::new(0.0, 0.0, 1.0);
+
+static PLANE_P: Vec3D = Vec3D::new(0.0, 0.0, 0.1);
+static PLANE_N: Vec3D = Vec3D::new(0.0, 0.0, 1.0);
+
+static OFFSET_VIEW: Vec3D = Vec3D::new(1.0, 1.0, 0.0);
 
 #[derive(Debug, Snafu)]
 pub(crate) enum WorldError {
@@ -138,10 +144,8 @@ impl World {
         let mat_world = mat_rot_z * mat_rot_x;
         let mat_world = mat_world * mat_trans;
 
-        let target = Vec3D::new(0.0, 0.0, 1.0);
-
         let mat_camera_rot = Mat4x4::rotation_y(self.yaw);
-        self.look_dir = target * mat_camera_rot;
+        self.look_dir = TARGET * mat_camera_rot;
         let target = self.camera + self.look_dir;
         let mat_camera = self.camera.point_at(&target, &UP);
 
@@ -150,10 +154,8 @@ impl World {
         self.triangles_to_raster.clear();
 
         for tri in self.mesh_cube.0.iter() {
-            let mut tri_transformed = Triangle::default();
-            tri_transformed[0] = tri[0] * mat_world;
-            tri_transformed[1] = tri[1] * mat_world;
-            tri_transformed[2] = tri[2] * mat_world;
+            let mut tri_transformed =
+                Triangle::new(tri[0] * mat_world, tri[1] * mat_world, tri[2] * mat_world);
 
             let line_1 = tri_transformed[1] - tri_transformed[0];
             let line_2 = tri_transformed[2] - tri_transformed[0];
@@ -172,9 +174,7 @@ impl World {
                 tri_transformed[1] *= mat_view;
                 tri_transformed[2] *= mat_view;
 
-                let plane_p = Vec3D::new(0.0, 0.0, 0.1);
-                let plane_n = Vec3D::new(0.0, 0.0, 1.0);
-                let clipped_triangles = tri_transformed.clip_against_plane(&plane_p, &plane_n);
+                let clipped_triangles = tri_transformed.clip_against_plane(&PLANE_P, &PLANE_N);
 
                 for mut clipped_tri in clipped_triangles {
                     clipped_tri[0] *= mat_proj;
@@ -192,10 +192,9 @@ impl World {
                     clipped_tri[1].y *= -1.0;
                     clipped_tri[2].y *= -1.0;
 
-                    let offset_view = Vec3D::new(1.0, 1.0, 0.0);
-                    clipped_tri[0] += offset_view;
-                    clipped_tri[1] += offset_view;
-                    clipped_tri[2] += offset_view;
+                    clipped_tri[0] += OFFSET_VIEW;
+                    clipped_tri[1] += OFFSET_VIEW;
+                    clipped_tri[2] += OFFSET_VIEW;
                     clipped_tri[0].x *= 0.5 * window_width as f32;
                     clipped_tri[0].y *= 0.5 * window_height as f32;
                     clipped_tri[1].x *= 0.5 * window_width as f32;
