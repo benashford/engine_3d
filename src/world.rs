@@ -1,17 +1,11 @@
-use std::cmp::{self, Ordering};
+use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::f32::consts::PI;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Error as IOError};
 use std::ops::{Add, AddAssign, Div, DivAssign, Index, IndexMut, Mul, MulAssign, Sub, SubAssign};
 
-use sdl2::{
-    keyboard::Keycode,
-    pixels::Color,
-    rect::Point,
-    render::{BlendMode, Canvas},
-    video::Window,
-};
+use sdl2::{keyboard::Keycode, pixels::Color, rect::Point, render::Canvas, video::Window};
 
 use smallvec::SmallVec;
 
@@ -19,9 +13,10 @@ use snafu::Snafu;
 
 use super::sdl_ext::fill_polygon;
 
-const FOV: f32 = 90.0;
 const FAR: f32 = 1000.0;
 const NEAR: f32 = 0.1;
+
+const UP: Vec3D = Vec3D::new(0.0, 1.0, 0.0);
 
 #[derive(Debug, Snafu)]
 pub(crate) enum WorldError {
@@ -60,6 +55,10 @@ pub(crate) struct World {
     look_dir: Vec3D,
 
     yaw: f32,
+    yaw_diff: f32,
+
+    direction_of_travel: Vec3D,
+
     theta: f32,
 }
 
@@ -74,26 +73,42 @@ impl World {
             camera: Vec3D::default(),
             look_dir: Vec3D::default(),
             yaw: 0.0,
+            yaw_diff: 0.0,
+            direction_of_travel: Vec3D::default(),
             theta: 0.0,
         })
     }
 
     pub(crate) fn handle_key(&mut self, keycode: Keycode, elapsed_time: f32) {
         match keycode {
-            Keycode::Up => self.camera.y += 8.0 * elapsed_time,
-            Keycode::Down => self.camera.y -= 8.0 * elapsed_time,
-            Keycode::Left => self.camera.x -= 8.0 * elapsed_time,
-            Keycode::Right => self.camera.x += 8.0 * elapsed_time,
+            Keycode::Up => {
+                let up = UP * (32.0 * elapsed_time);
+                self.direction_of_travel += up;
+            }
+            Keycode::Down => {
+                let up = UP * (32.0 * elapsed_time);
+                self.direction_of_travel -= up;
+            }
+            Keycode::Left => {
+                let left = (self.look_dir * Mat4x4::rotation_y(PI / 2.0)).normalise()
+                    * (32.0 * elapsed_time);
+                self.direction_of_travel -= left;
+            }
+            Keycode::Right => {
+                let left = (self.look_dir * Mat4x4::rotation_y(PI / 2.0)).normalise()
+                    * (32.0 * elapsed_time);
+                self.direction_of_travel += left;
+            }
             Keycode::W => {
-                let forward = self.look_dir * (8.0 * elapsed_time);
-                self.camera += forward;
+                let forward = self.look_dir * (32.0 * elapsed_time);
+                self.direction_of_travel += forward;
             }
             Keycode::S => {
-                let forward = self.look_dir * (8.0 * elapsed_time);
-                self.camera -= forward;
+                let forward = self.look_dir * (32.0 * elapsed_time);
+                self.direction_of_travel -= forward;
             }
-            Keycode::A => self.yaw -= 2.0 * elapsed_time,
-            Keycode::D => self.yaw += 2.0 * elapsed_time,
+            Keycode::A => self.yaw_diff -= 2.0 * elapsed_time,
+            Keycode::D => self.yaw_diff += 2.0 * elapsed_time,
             _ => (),
         }
     }
@@ -101,29 +116,34 @@ impl World {
     pub(crate) fn do_tick(
         &mut self,
         canvas: &mut Canvas<Window>,
-        elapsed_time: f32,
+        _elapsed_time: f32,
     ) -> Result<(), WorldError> {
         let window = canvas.window();
         let (window_width, window_height) = window.size();
         let aspect_ratio = window_height as f32 / window_width as f32;
-        let mat_proj = Mat4x4::projection(90.0, aspect_ratio, NEAR, FAR);
+
+        self.camera += self.direction_of_travel;
+        self.direction_of_travel *= 0.9;
+
+        self.yaw += self.yaw_diff;
+        self.yaw_diff *= 0.9;
+
+        let mat_proj = Mat4x4::projection(60.0, aspect_ratio, NEAR, FAR);
 
         let mat_rot_z = Mat4x4::rotation_z(self.theta / 2.0);
         let mat_rot_x = Mat4x4::rotation_x(self.theta);
 
         let mat_trans = Mat4x4::translation(0.0, 0.0, 5.0);
 
-        let mat_world = Mat4x4::identity();
         let mat_world = mat_rot_z * mat_rot_x;
         let mat_world = mat_world * mat_trans;
 
-        let up = Vec3D::new(0.0, 1.0, 0.0);
         let target = Vec3D::new(0.0, 0.0, 1.0);
 
         let mat_camera_rot = Mat4x4::rotation_y(self.yaw);
         self.look_dir = target * mat_camera_rot;
         let target = self.camera + self.look_dir;
-        let mat_camera = self.camera.point_at(&target, &up);
+        let mat_camera = self.camera.point_at(&target, &UP);
 
         let mat_view = mat_camera.quick_inverse();
 
@@ -215,7 +235,7 @@ impl World {
                             Vec3D::new(window_width as f32 - 1.0, 0.0, 0.0),
                             Vec3D::new(-1.0, 0.0, 0.0),
                         ),
-                        x => unreachable!(),
+                        _x => unreachable!(),
                     };
                     self.triangles_to_clip
                         .extend(test.clip_against_plane(&plane_p, &plane_n));
@@ -241,13 +261,8 @@ struct Vec3D {
 }
 
 impl Vec3D {
-    fn new(x: f32, y: f32, z: f32) -> Self {
-        Vec3D {
-            x,
-            y,
-            z,
-            ..Default::default()
-        }
+    const fn new(x: f32, y: f32, z: f32) -> Self {
+        Vec3D { x, y, z, w: 0.0 }
     }
 
     fn len(&self) -> f32 {
@@ -393,6 +408,15 @@ impl Mul<f32> for Vec3D {
     }
 }
 
+impl MulAssign<f32> for Vec3D {
+    fn mul_assign(&mut self, rhs: f32) {
+        self.x *= rhs;
+        self.y *= rhs;
+        self.z *= rhs;
+        self.w = 0.0;
+    }
+}
+
 impl Div<f32> for Vec3D {
     type Output = Vec3D;
 
@@ -423,6 +447,7 @@ impl Triangle {
         }
     }
 
+    #[allow(dead_code)]
     fn draw(&self, canvas: &mut Canvas<Window>) -> Result<(), WorldError> {
         canvas.set_draw_color(Color::RGB(255, self.col, self.col));
         let points = [
@@ -452,7 +477,6 @@ impl Triangle {
     fn clip_against_plane(&self, plane_p: &Vec3D, plane_n: &Vec3D) -> SmallVec<[Triangle; 2]> {
         let plane_n = plane_n.normalise();
         let dist = |p: &Vec3D| {
-            let n = p.normalise(); // Unused - but is the same in the original 🤔
             plane_n.x * p.x + plane_n.y * p.y + plane_n.z * p.z - plane_n.dot_product(plane_p)
         };
         let mut inside_points = SmallVec::<[&Vec3D; 3]>::new();
@@ -538,10 +562,6 @@ impl Mul<Mat4x4> for Triangle {
 struct Mesh(Vec<Triangle>);
 
 impl Mesh {
-    fn new(triangles: Vec<Triangle>) -> Self {
-        Mesh(triangles)
-    }
-
     fn from_object_file(filename: &str) -> Result<Self, WorldError> {
         let file = File::open(filename)?;
         let mut verts = Vec::new();
@@ -592,15 +612,6 @@ impl Mesh {
 struct Mat4x4([[f32; 4]; 4]);
 
 impl Mat4x4 {
-    fn identity() -> Self {
-        let mut m = Mat4x4::default();
-        m[0][0] = 1.0;
-        m[1][1] = 1.0;
-        m[2][2] = 1.0;
-        m[3][3] = 1.0;
-        m
-    }
-
     fn rotation_x(angle_rad: f32) -> Self {
         let mut m = Mat4x4::default();
         m[0][0] = 1.0;
@@ -647,7 +658,7 @@ impl Mat4x4 {
     }
 
     fn projection(fov_degrees: f32, aspect_ratio: f32, near: f32, far: f32) -> Self {
-        let fov_rad = 1.0 / (FOV * 0.5 / 180.0 * PI).tan();
+        let fov_rad = 1.0 / (fov_degrees * 0.5 / 180.0 * PI).tan();
         let mut m = Mat4x4::default();
         m[0][0] = aspect_ratio * fov_rad;
         m[1][1] = fov_rad;

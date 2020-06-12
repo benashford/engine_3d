@@ -33,7 +33,6 @@ fn main() -> Result<(), String> {
 
     'running: loop {
         let this_loop_inst = Instant::now();
-        let dur = this_loop_inst - start_time;
         let frame_dur = this_loop_inst - prev_loop_inst;
         prev_loop_inst = this_loop_inst;
         let frames_per_sec = 1.0 / frame_dur.as_secs_f32();
