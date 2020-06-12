@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 
 use snafu::Snafu;
 
-use super::sdl_ext::fill_polygon;
+use super::sdl_ext::{fill_polygon, Pt};
 
 const FAR: f32 = 1000.0;
 const NEAR: f32 = 0.1;
@@ -236,6 +236,7 @@ impl World {
                         ),
                         _x => unreachable!(),
                     };
+
                     self.triangles_to_clip
                         .extend(test.clip_against_plane(&plane_p, &plane_n));
                 }
@@ -464,10 +465,10 @@ impl Triangle {
         canvas.set_draw_color(Color::RGB(self.col, self.col, self.col));
 
         let points = [
-            Point::new(self[0].x as i32, self[0].y as i32),
-            Point::new(self[1].x as i32, self[1].y as i32),
-            Point::new(self[2].x as i32, self[2].y as i32),
-            Point::new(self[0].x as i32, self[0].y as i32),
+            Pt::new(self[0].x as i32, self[0].y as i32),
+            Pt::new(self[1].x as i32, self[1].y as i32),
+            Pt::new(self[2].x as i32, self[2].y as i32),
+            Pt::new(self[0].x as i32, self[0].y as i32),
         ];
         fill_polygon(canvas, &points[..])
             .map_err(|e| WorldError::sdl_error(format!("Cannot fill polygon: {}", e)))

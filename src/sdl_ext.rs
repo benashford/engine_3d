@@ -1,6 +1,17 @@
 use sdl2::{rect::Point, render::Canvas, video::Window};
 
-pub(crate) fn fill_polygon(canvas: &mut Canvas<Window>, points: &[Point]) -> Result<(), String> {
+pub(crate) struct Pt {
+    x: i32,
+    y: i32,
+}
+
+impl Pt {
+    pub(crate) fn new(x: i32, y: i32) -> Self {
+        Pt { x, y }
+    }
+}
+
+pub(crate) fn fill_polygon(canvas: &mut Canvas<Window>, points: &[Pt]) -> Result<(), String> {
     let num_points = points.len();
     let mut num_points_proc = 1;
 
