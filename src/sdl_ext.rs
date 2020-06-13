@@ -1,4 +1,4 @@
-use sdl2::{rect::Point, render::Canvas, video::Window};
+use sdl2::{render::Canvas, video::Window};
 
 pub(crate) struct Pt {
     x: i32,
